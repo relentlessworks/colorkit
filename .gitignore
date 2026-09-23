@@ -1,0 +1,5 @@
+/colorkit
+*.exe
+*.dll
+*.so
+*.dylib

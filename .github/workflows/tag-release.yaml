@@ -1,0 +1,92 @@
+name: Tag & Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tagged: ${{ steps.tag.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read version
+        id: version
+        run: echo "version=v$(cat VERSION)" >> $GITHUB_OUTPUT
+      - name: Check if tag exists
+        id: tag
+        run: |
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "tagged=false" >> $GITHUB_OUTPUT
+          else
+            echo "tagged=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Create tag
+        if: steps.tag.outputs.tagged == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    needs: tag
+    if: needs.tag.outputs.tagged == 'true'
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          ext=""
+          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/colorkit-${{ matrix.goos }}-${{ matrix.goarch }}${ext} ./cmd/colorkit
+          cd dist
+          tar czf colorkit-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz colorkit-${{ matrix.goos }}-${{ matrix.goarch }}${ext} ../README.md ../LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: colorkit-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [tag, cross-compile]
+    if: needs.tag.outputs.tagged == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.version }}
+          name: ${{ needs.tag.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
